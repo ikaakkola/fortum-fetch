@@ -127,7 +127,9 @@ func doUsage() {
 		log.Fatal(err)
 	}
 	if len(*consumptionData) == 0 {
-		log.Printf("no consumption data found")
+		if cli.Debug {
+			log.Printf("no consumption data found")
+		}
 		return
 	}
 
@@ -153,8 +155,14 @@ func doUsage() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if cli.Debug {
+		log.Printf("processing %d consumption items", len(*consumptionData))
+	}
 
-	for _, item := range *consumptionData {
+	for idx, item := range *consumptionData {
+		if cli.Debug {
+			log.Printf("processing %d metering rows for consumption item %d", len(item.Consumption), idx)
+		}
 		for _, ci := range item.Consumption {
 			row := meteringRow{
 				ci.FromTime.atLocation(tz),

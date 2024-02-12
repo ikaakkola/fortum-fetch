@@ -21,9 +21,9 @@ Run `fortum-fetch -h` for usage information
 
 ## Configuration via .config/fortum-fetch
 
-Configuration values are read from `~/.config/fortum_fetch` which is treated as YAML
+Configuration values are read from `~/.config/fortum_fetch` (YAML)
 
-For example to persist login details and :
+For example to persist login details and some usage configuration values:
 
     # username for My Fortum
     user: "hello@example.com"
@@ -39,9 +39,7 @@ For example to persist login details and :
       
 ## Output format
 
-The output format can be configured with a text template. The template is called once for each row of data.
-
-The template has the following fields available
+The output format can be configured with a text template. The template is called once for each row of data, with the following fields:
 
 * Time
 * CustomerId
@@ -51,7 +49,7 @@ The template has the following fields available
 * Energy
 * Cost
 
-For example to print each row with only the time and energy values:
+For example, to print each row with only the time and energy values:
 
     {{.Time}} {{.Energy}}\n
     

@@ -297,7 +297,7 @@ func getMeteringPointUsage(client *http.Client, req *http.Request, customerId ui
 	// Get usage
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, &RequestStatusError{Msg: err.Error(), Status: res.StatusCode}
+		return nil, &RequestStatusError{Msg: err.Error(), Status: getStatusCode(res, 500)}
 	}
 	defer res.Body.Close()
 
@@ -316,4 +316,11 @@ func getMeteringPointUsage(client *http.Client, req *http.Request, customerId ui
 	}
 	usageResponse.MeteringPoint = &meteringPoint
 	return &usageResponse, nil
+}
+
+func getStatusCode(res *http.Response, defaultValue int) int {
+	if res == nil {
+		return defaultValue
+	}
+	return res.StatusCode
 }

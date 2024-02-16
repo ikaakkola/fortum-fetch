@@ -164,8 +164,13 @@ func doUsage() {
 			log.Printf("processing %d metering rows for consumption item %d", len(item.Consumption), idx)
 		}
 		for _, ci := range item.Consumption {
+			time, err := ci.FromTime.atLocation(tz)
+			if err != nil {
+				log.Fatal(err)
+			}
+
 			row := meteringRow{
-				ci.FromTime.atLocation(tz),
+				*time,
 				customerInfo.Owner.CustomerId,
 				item.MeteringPoint.MeteringPointId,
 				item.MeteringPoint.MeteringPointNo,
@@ -173,7 +178,8 @@ func doUsage() {
 				ci.Energy,
 				ci.EnergyCost,
 			}
-			err := meteringTemplate.Execute(os.Stdout, row)
+
+			err = meteringTemplate.Execute(os.Stdout, row)
 			if err != nil {
 				log.Fatal(err)
 			}

@@ -67,24 +67,22 @@ type Contracts struct {
 }
 
 type UsageTime struct {
-	time.Time
+	string
 }
 
 func (ut *UsageTime) UnmarshalJSON(b []byte) error {
 	value := strings.Trim(string(b), `"`)
-	if value == "" || value == "null" {
-		return nil
-	}
-	t, err := time.Parse("2006-01-02T15:04:05", value)
-	if err != nil {
-		return err
-	}
-	*ut = UsageTime{t}
+	*ut = UsageTime{value}
 	return nil
 }
 
-func (ut *UsageTime) atLocation(location *time.Location) string {
-	return ut.In(location).Format(time.RFC3339)
+func (ut *UsageTime) atLocation(location *time.Location) (*string, error) {
+	t, err := time.ParseInLocation("2006-01-02T15:04:05", ut.string, location)
+	if err != nil {
+		return nil, err
+	}
+	v := t.In(location).Format(time.RFC3339)
+	return &v, nil
 }
 
 type Usage struct {

@@ -81,7 +81,7 @@ func (ut *UsageTime) atLocation(location *time.Location) (*string, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := t.In(location).Format(time.RFC3339)
+	v := t.In(time.UTC).Format(time.RFC3339)
 	return &v, nil
 }
 

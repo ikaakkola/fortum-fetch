@@ -176,7 +176,7 @@ func doUsage() {
 				item.MeteringPoint.MeteringPointNo,
 				item.MeteringPoint.Address.Format(),
 				ci.Energy,
-				ci.EnergyCost + ci.NetworkCost,
+				ci.EnergyCost + ci.EnergyBaseCost,
 			}
 
 			err = meteringTemplate.Execute(os.Stdout, row)

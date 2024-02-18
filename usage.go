@@ -91,10 +91,10 @@ type Usage struct {
 	Unit          string
 	CostUnit      string
 	Consumption   []struct {
-		FromTime    UsageTime
-		EnergyCost  float64
-		NetworkCost float64
-		Energy      float64
+		FromTime       UsageTime
+		EnergyCost     float64
+		EnergyBaseCost float64
+		Energy         float64
 	}
 }
 

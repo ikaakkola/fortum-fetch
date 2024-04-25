@@ -9,13 +9,13 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// Path to login
+// Path to login (only english supported!)
 const loginPath = "/login?lang=en"
 
 // Form elements in My Fortum
-const userNameInput = `//input[@id="ttqusername"]`
-const passwordInput = `//input[@id="user-password"]`
-const submitButton = `a.btn--login`
+const userNameInput = `//input[@name="callback_1"]`
+const passwordInput = `//input[@name="callback_2"]`
+const submitButton = `//button[text()="Log in"]`
 
 type Auth struct {
 	User     string
@@ -78,7 +78,7 @@ func getAccessToken(auth *Auth) (*string, error) {
 		log.Printf("login as %s", auth.User)
 	}
 	err = chromedp.Run(ctx,
-		runWithTimeOut(&ctx, 10, chromedp.Tasks{
+		runWithTimeOut(&ctx, 30, chromedp.Tasks{
 			chromedp.Sleep(time.Second * 1), // the Wicket javascript seems to connect to elements slowly
 			chromedp.SendKeys(userNameInput, auth.User),
 			chromedp.SendKeys(passwordInput, auth.Password),
@@ -92,9 +92,10 @@ func getAccessToken(auth *Auth) (*string, error) {
 	// Submit login form
 	err = chromedp.Run(ctx, runWithTimeOut(&ctx, 10, chromedp.Tasks{
 		chromedp.WaitReady(submitButton),
-		chromedp.Click(submitButton, chromedp.ByQuery),
-		chromedp.WaitNotPresent(userNameInput),
+		chromedp.Click(submitButton),
+		chromedp.WaitNotPresent(passwordInput),
 	}))
+
 	if err != nil {
 		cancel()
 		return nil, errors.Join(errors.New("login failed"), err)

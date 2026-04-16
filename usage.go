@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -11,59 +12,71 @@ import (
 	"time"
 )
 
-const customerInfoPath = "/api/customer/representations"
-const contractPath = "/api/contracts/customer/%d?status=A,M,O,S"
-const consumptionPath = `/api/v2/consumption?
-customerId=:customerId
-&meteringPointNo=:meteringPointNo
-&meteringPointId=:meteringPointId
-&resolution=:resolution
-&from=:fromDate
-&to=:toDate
-&latestMeasurement=:latestMeasurement
-&contractType=Electricity
-&isDistrictHeat=false`
+// https://www.fortum.com/fi/sahkoa/api/auth/session
+const customerInfoPath = "/api/auth/session"
+
+//const contractPath = "/api/contracts/customer/%d?status=A,M,O,S"
+
+// https://www.fortum.com/fi/sahkoa/api/trpc/loggedIn.timeSeries.consumptionForComparison?batch=1&input=%7B%220%22%3A%7B%22json%22%3A%7B%22meteringPointNo%22%3A%5B%22690193787%22%5D%2C%22fromDate%22%3A%222020-04-16T08%3A03%3A58.022%2B03%3A00%22%2C%22toDate%22%3A%222026-04-16T08%3A03%3A58.022%2B03%3A00%22%2C%22type%22%3A%22CONSUMPTION%22%7D%7D%7D
+// https://www.fortum.com/fi/sahkoa/api/trpc/loggedIn.timeSeries.listTimeSeries?batch=1&input=%7B%220%22%3A%7B%22json%22%3A%7B%22meteringPointNo%22%3A%5B%22690193787%22%5D%2C%22fromDate%22%3A%222026-03-31T21%3A00%3A00.000Z%22%2C%22toDate%22%3A%222026-04-30T20%3A59%3A59.999Z%22%2C%22resolution%22%3A%22DAY%22%2C%22type%22%3A%22CONSUMPTION%22%7D%7D%7D
+
+type ConsumptionInput struct {
+	MeteringPointNo []string `json:"meteringPointNo"`
+	FromDate        string   `json:"fromDate"`
+	ToDate          string   `json:"toDate"`
+	Resolution      string   `json:"resolution"`
+	Type            string   `json:"type"`
+}
+
+const consumptionPath = `/api/trpc/loggedIn.timeSeries.listTimeSeries?
+batch=1
+&input=:input
+`
 
 type CustomerInfo struct {
-	Error bool
-	Owner struct {
-		CustomerId uint64
-		FirstName  string
-		LastName   string
+	User struct {
+		Email         string
+		CustomerId    string
+		DeliverySites []DeliverySite
 	}
 }
 
-type MeteringPoint struct {
-	MeteringPointId string
-	MeteringPointNo uint64
-	Address         MeteringPointAddress
-	IsDistrictHeat  bool
-	Resolution      string
+type DeliverySite struct {
+	PriceArea   string
+	Consumption struct {
+		MeteringPointId string
+		MeteringPointNo string
+		PriceArea       string
+		HouseType       string
+		MeasurementType string
+		MeteringType    string
+		ContractNo      uint64
+	}
+	Address struct {
+		StreetName  string
+		HouseNumber string
+		HouseLetter string
+		Residence   string
+		CityName    string
+		ZipCode     string
+	}
 }
 
-type MeteringPointAddress struct {
-	StreetName  string
-	HouseNumber string
-	HouseLetter string
-	Residence   string
-	PostalCode  string
-	PostalCity  string
-	CountryCode string
+func (a *DeliverySite) FormatAddress() string {
+	return fmt.Sprintf("%s %s%s%s", a.Address.StreetName, a.Address.HouseNumber, a.Address.HouseLetter, a.Address.Residence)
 }
 
-func (a *MeteringPointAddress) Format() string {
-	return fmt.Sprintf("%s %s%s%s", a.StreetName, a.HouseNumber, a.HouseLetter, a.Residence)
-}
-
-type ActiveContract struct {
-	MeteringPoint        MeteringPoint
-	MeteringPointAddress MeteringPointAddress
-	ProductName          string
-	Is15minAvailable     bool
-}
-
-type Contracts struct {
-	Active []ActiveContract
+func (a *DeliverySite) MeasurementResolution() string {
+	switch a.Consumption.MeasurementType {
+	case "PER_15_MIN":
+		return "PER_15_MIN"
+	case "HOURLY":
+		return "HOUR"
+	case "DAILY":
+		return "DAY"
+	default:
+		return "HOUR"
+	}
 }
 
 type UsageTime struct {
@@ -77,7 +90,7 @@ func (ut *UsageTime) UnmarshalJSON(b []byte) error {
 }
 
 func (ut *UsageTime) atLocation(location *time.Location) (*string, error) {
-	t, err := time.ParseInLocation("2006-01-02T15:04:05", ut.string, location)
+	t, err := time.ParseInLocation("2006-01-02T15:04:05.000Z", ut.string, location)
 	if err != nil {
 		return nil, err
 	}
@@ -86,16 +99,81 @@ func (ut *UsageTime) atLocation(location *time.Location) (*string, error) {
 }
 
 type Usage struct {
-	MeteringPoint *MeteringPoint
-	Error         bool
-	Unit          string
-	CostUnit      string
-	Consumption   []struct {
-		FromTime       UsageTime
-		EnergyCost     float64
-		EnergyBaseCost float64
-		Energy         float64
+	DeliverySite *DeliverySite
+	Result       struct {
+		Data struct {
+			Json []struct {
+				DeliverySiteCategory string
+				MeasurementUnit      string
+				MeteringPointNo      string
+				PriceUnit            string
+				CostUnit             string
+				TemperatureUnit      string
+				Series               []UsageSeries
+			}
+		}
 	}
+	Error struct {
+		Json struct {
+			Message string
+			Code    uint64
+			Data    struct {
+				Code       string
+				HttpStatus uint16
+				Path       string
+			}
+		}
+	}
+}
+
+type UsageSeries struct {
+	AtUTC  UsageTime
+	Energy []struct {
+		Value float64
+		Type  string
+	}
+	Cost []struct {
+		Total float64
+		Value float64
+		Type  string
+	}
+	Price struct {
+		Total         float64
+		Value         float64
+		VatAmount     float64
+		VatPercentage float64
+	}
+	TemperatureReading struct {
+		Temperature float64
+	}
+}
+
+func (u *Usage) Series() ([]UsageSeries, error) {
+	if len(u.Result.Data.Json) == 0 {
+		return nil, errors.New("Empty Result JSON data")
+	}
+	if len(u.Result.Data.Json[0].Series) == 0 {
+		return nil, errors.New("No data series in Result JSON data")
+	}
+	return u.Result.Data.Json[0].Series, nil
+}
+
+func (u *UsageSeries) TotalElectricityCost() float64 {
+	for _, cost := range u.Cost {
+		if cost.Type == "COST_SALES_ELECTRICITY" {
+			return cost.Total
+		}
+	}
+	return 0.0
+}
+
+func (u *UsageSeries) EnergyConsumptionValue() float64 {
+	for _, energy := range u.Energy {
+		if energy.Type == "ENERGY" {
+			return energy.Value
+		}
+	}
+	return 0.0
 }
 
 type RequestStatusError struct {
@@ -107,22 +185,26 @@ func (e *RequestStatusError) Error() string {
 	return fmt.Sprintf("%s (status %d)", e.Msg, e.Status)
 }
 
-func buildRequest(method string, url url.URL, accessToken string) (*http.Request, error) {
-	req, err := http.NewRequest("GET", url.String(), nil)
+func buildRequest(method string, url url.URL, cookiesStr string) (*http.Request, error) {
+	req, err := http.NewRequest(method, url.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	cookies, err := http.ParseCookie(cookiesStr)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
 
 	return req, nil
 }
 
-func getCustomerInfo(client *http.Client, baseUrl string, accessToken string) (*CustomerInfo, error) {
+func getCustomerInfo(client *http.Client, baseUrl string, cookies string) (*CustomerInfo, error) {
 	if baseUrl == "" {
 		return nil, errors.New("base URL cannot be empty")
 	}
-	if accessToken == "" {
-		return nil, &RequestStatusError{Msg: "accessToken cannot be empty", Status: 401}
+	if cookies == "" {
+		return nil, &RequestStatusError{Msg: "Cookies cannot be empty", Status: 401}
 	}
 
 	customerInfoUrl, err := url.Parse(baseUrl + customerInfoPath)
@@ -134,7 +216,7 @@ func getCustomerInfo(client *http.Client, baseUrl string, accessToken string) (*
 		log.Printf("get customer information: %s", customerInfoUrl.String())
 	}
 
-	req, err := buildRequest("GET", *customerInfoUrl, accessToken)
+	req, err := buildRequest("GET", *customerInfoUrl, cookies)
 	if err != nil {
 		return nil, err
 	}
@@ -160,78 +242,16 @@ func getCustomerInfo(client *http.Client, baseUrl string, accessToken string) (*
 		return nil, errors.Join(errors.New("unable to get parse customer information response"), err)
 	}
 
-	if customerInfo.Error {
-		return nil, errors.New("invalid customer info response")
+	if customerInfo.User.CustomerId == "" {
+		return nil, errors.New("invalid customer info response (no customerId received)")
+	}
+	if len(customerInfo.User.DeliverySites) == 0 {
+		return nil, errors.New("invalid customer info response (no deliverySites received)")
 	}
 	return &customerInfo, nil
 }
 
-func getMeteringPoints(client *http.Client, baseUrl string, accessToken string, customerId uint64) (*[]MeteringPoint, error) {
-	if baseUrl == "" {
-		return nil, errors.New("base URL cannot be empty")
-	}
-	contractUrl, err := url.Parse(baseUrl + fmt.Sprintf(contractPath, customerId))
-	if err != nil {
-		return nil, fmt.Errorf("invalid url: %s", err.Error())
-	}
-	req, err := buildRequest("GET", *contractUrl, accessToken)
-	if err != nil {
-		return nil, err
-	}
-	if cli.Debug {
-		log.Printf("get contract information: %s", req.URL.String())
-	}
-
-	// GET invoice information
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, &RequestStatusError{Msg: err.Error(), Status: res.StatusCode}
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != 200 {
-		return nil, &RequestStatusError{Msg: "invalid response status", Status: res.StatusCode}
-	}
-
-	// Parse invoice information response
-	if cli.Debug {
-		log.Print("parse contract response")
-	}
-
-	var contractsResponse struct {
-		Error     bool
-		Contracts Contracts
-	}
-	err = json.NewDecoder(res.Body).Decode(&contractsResponse)
-	if err != nil {
-		return nil, errors.Join(errors.New("unable to get parse contract response"), err)
-	}
-
-	if contractsResponse.Error {
-		return nil, errors.New("invalid invoice info response")
-	}
-
-	var points []MeteringPoint
-	for _, active := range contractsResponse.Contracts.Active {
-		if active.MeteringPoint.IsDistrictHeat {
-			continue
-		}
-		if cli.Debug {
-			log.Printf("found active contract: %#v", active)
-		}
-		active.MeteringPoint.Address = active.MeteringPointAddress
-		if active.Is15minAvailable {
-			active.MeteringPoint.Resolution = "minute"
-		} else {
-			active.MeteringPoint.Resolution = "hour"
-		}
-		points = append(points, active.MeteringPoint)
-	}
-
-	return &points, nil
-}
-
-func getConsumptionData(client *http.Client, baseUrl string, accessToken string, customerId uint64, from *time.Time, to *time.Time, meteringPoints *[]MeteringPoint) (*[]Usage, error) {
+func getConsumptionData(client *http.Client, baseUrl string, cookies string, customerId string, from *time.Time, to *time.Time, meteringPoints *[]DeliverySite) (*[]Usage, error) {
 	if baseUrl == "" {
 		return nil, errors.New("base URL cannot be empty")
 	}
@@ -240,7 +260,7 @@ func getConsumptionData(client *http.Client, baseUrl string, accessToken string,
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %s", err.Error())
 	}
-	req, err := buildRequest("GET", *consumptionUrl, accessToken)
+	req, err := buildRequest("GET", *consumptionUrl, cookies)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +273,7 @@ func getConsumptionData(client *http.Client, baseUrl string, accessToken string,
 	for _, meteringPoint := range *meteringPoints {
 		u, err := getMeteringPointUsage(client, req, customerId, from, to, meteringPoint)
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("could not get usage for meteringPointId %s", meteringPoint.MeteringPointId), err)
+			return nil, errors.Join(fmt.Errorf("could not get usage for meteringPointId %s", meteringPoint.Consumption.MeteringPointId), err)
 		}
 		if u != nil {
 			usage = append(usage, *u)
@@ -263,9 +283,9 @@ func getConsumptionData(client *http.Client, baseUrl string, accessToken string,
 	return &usage, nil
 }
 
-func getMeteringPointUsage(client *http.Client, req *http.Request, customerId uint64, from *time.Time, to *time.Time, meteringPoint MeteringPoint) (*Usage, error) {
+func getMeteringPointUsage(client *http.Client, req *http.Request, customerId string, from *time.Time, to *time.Time, deliverySite DeliverySite) (*Usage, error) {
 	if cli.Debug {
-		log.Printf("get consumption for meteringPointNo=%d meteringPointId=%s", meteringPoint.MeteringPointNo, meteringPoint.MeteringPointId)
+		log.Printf("get consumption for meteringPointNo=%s meteringPointId=%s", deliverySite.Consumption.MeteringPointNo, deliverySite.Consumption.MeteringPointId)
 	}
 
 	var now, then time.Time
@@ -280,14 +300,21 @@ func getMeteringPointUsage(client *http.Client, req *http.Request, customerId ui
 		then = now.Add(-time.Duration(time.Hour * 24 * 3))
 	}
 
+	consumptionInput := ConsumptionInput{
+		MeteringPointNo: []string{deliverySite.Consumption.MeteringPointNo},
+		FromDate:        then.Format(time.RFC3339),
+		ToDate:          now.Format(time.RFC3339),
+		Resolution:      deliverySite.MeasurementResolution(),
+		Type:            "CONSUMPTION",
+	}
+
+	consumptionInputJson, err := json.Marshal(consumptionInput)
+	if err != nil {
+		return nil, &RequestStatusError{Msg: err.Error(), Status: 400}
+	}
+
 	values := req.URL.Query()
-	values.Set("customerId", fmt.Sprint(customerId))
-	values.Set("meteringPointNo", fmt.Sprint(meteringPoint.MeteringPointNo))
-	values.Set("meteringPointId", meteringPoint.MeteringPointId)
-	values.Set("resolution", meteringPoint.Resolution)
-	values.Set("from", then.Format("2006-01-02"))
-	values.Set("to", now.Format("2006-01-02"))
-	values.Set("latestMeasurement", now.Format(time.RFC3339))
+	values.Set("input", fmt.Sprintf(`{"0":{"json":%v}}`, string(consumptionInputJson)))
 	req.URL.RawQuery = values.Encode()
 	if cli.Debug {
 		log.Printf("get consumption: %s", req.URL.String())
@@ -301,20 +328,31 @@ func getMeteringPointUsage(client *http.Client, req *http.Request, customerId ui
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		return nil, &RequestStatusError{Msg: fmt.Sprintf("invalid response status for meteringPointId %s", meteringPoint.MeteringPointId), Status: res.StatusCode}
+		bodyBytes, _ := io.ReadAll(res.Body)
+		return nil, &RequestStatusError{Msg: fmt.Sprintf("invalid response status for meteringPointId %s: %s", deliverySite.Consumption.MeteringPointId, string(bodyBytes)), Status: res.StatusCode}
 	}
 
-	var usageResponse Usage
+	var usageResponse []Usage
 	err = json.NewDecoder(res.Body).Decode(&usageResponse)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("unable to parse usage response for meteringPointId %s", meteringPoint.MeteringPointId), err)
+		return nil, errors.Join(fmt.Errorf("unable to parse usage response for meteringPointId %s", deliverySite.Consumption.MeteringPointId), err)
 	}
 
-	if cli.Debug {
-		log.Printf("received %d consumption items for %s (%s)", len(usageResponse.Consumption), meteringPoint.MeteringPointId, meteringPoint.Address.Format())
+	if len(usageResponse) == 0 {
+		return nil, fmt.Errorf("received no usage for meteringPointId %s", deliverySite.Consumption.MeteringPointId)
 	}
-	usageResponse.MeteringPoint = &meteringPoint
-	return &usageResponse, nil
+
+	if len(usageResponse) > 1 {
+		return nil, fmt.Errorf("received more than 1 usage for meteringPointId %s", deliverySite.Consumption.MeteringPointId)
+	}
+
+	usage := usageResponse[0]
+
+	if cli.Debug {
+		log.Printf("received %d consumption items for %s (%s)", len(usage.Result.Data.Json[0].Series), deliverySite.Consumption.MeteringPointId, deliverySite.FormatAddress())
+	}
+	usage.DeliverySite = &deliverySite
+	return &usage, nil
 }
 
 func getStatusCode(res *http.Response, defaultValue int) int {

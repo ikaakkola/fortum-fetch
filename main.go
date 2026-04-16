@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"text/template"
 	"time"
 
@@ -18,12 +19,12 @@ var cli struct {
 	Headless     bool   `help:"Enable headless mode" default:"true"`
 	User         string `short:"u" env:"FORTUM_USER" help:"My Fortum user to authenticate as"`
 	Password     string `short:"p" env:"FORTUM_PASSWORD" help:"Password for My Fortum user"`
-	Url          string `env:"FORTUM_URL" help:"My Fortum URL" default:"https://web.fortum.fi"`
+	Url          string `env:"FORTUM_URL" help:"My Fortum URL" default:"https://www.fortum.com/fi/sahkoa"`
 	Authenticate struct {
-	} `cmd:"" help:"Authenticate to My Fortum and acquire access token"`
+	} `cmd:"" help:"Authenticate to My Fortum and acquire access cookies"`
 
 	Usage struct {
-		AccessToken     string     `short:"t" env:"FORTUM_ACCESS_TOKEN" help:"Access Token"`
+		Cookies         string     `env:"FORTUM_COOKIES" help:"Cookies to use for authentication"`
 		MeteringPointId string     `env:"FORUTM_METERING_POINT_ID" help:"Only include data for this metering point ID"`
 		TimeZone        string     `env:"FORTUM_TZ" help:"Timezone for consumption data as received from Fortum. Output is always UTC" default:"Europe/Helsinki"`
 		MeteringFormat  string     `env:"FORTUM_OUTPUT_TEMPLATE" help:"Template for metering point output. Available fields: CustomerId, MeteringPointId, MeteringPointNo, MeteringPointAddress, Time, Energy, Cost" default:"${default_metering_format}"`
@@ -62,11 +63,18 @@ func doAuthenticate() string {
 	if err != nil {
 		log.Fatalf("invalid authentication configuration: %s", err.Error())
 	}
-	token, err := getAccessToken(auth)
+	cookies, err := getAccessCookies(auth)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return *token
+	if cookies == nil || len(cookies) != 2 {
+		log.Fatal("Could not resolve cookies token")
+	}
+	var result []string
+	for _, cookie := range cookies {
+		result = append(result, fmt.Sprintf("%v=%v", cookie.Name, cookie.Value))
+	}
+	return strings.Join(result, "; ")
 }
 
 func doUsage() {
@@ -74,7 +82,15 @@ func doUsage() {
 		httpClient()
 
 	var statusError *RequestStatusError
-	customerInfo, err := getCustomerInfo(client, cli.Url, cli.Usage.AccessToken)
+	if cli.Usage.Cookies == "" {
+		cli.Usage.Cookies = doAuthenticate()
+	}
+
+	if cli.Debug {
+		log.Printf("get customer information and meterig points")
+	}
+
+	customerInfo, err := getCustomerInfo(client, cli.Url, cli.Usage.Cookies)
 	if err != nil {
 		switch {
 		case errors.As(err, &statusError):
@@ -83,46 +99,41 @@ func doUsage() {
 				if cli.Debug {
 					log.Print("authentication failure, attempting to acquire new access token")
 				}
-				cli.Usage.AccessToken = doAuthenticate()
+				cli.Usage.Cookies = doAuthenticate()
 
-				customerInfo, err = getCustomerInfo(client, cli.Url, cli.Usage.AccessToken)
+				customerInfo, err = getCustomerInfo(client, cli.Url, cli.Usage.Cookies)
 				if err != nil {
-					log.Fatal(err)
+					log.Fatal(fmt.Sprintf("Authentication failed: %v", statusError.Msg))
 				}
 			}
 		default:
 			log.Fatal(err)
 		}
 	}
+
 	if cli.Debug {
 		log.Printf("get metering points")
 	}
-	meteringPoints, err := getMeteringPoints(client, cli.Url, cli.Usage.AccessToken, customerInfo.Owner.CustomerId)
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	if cli.Debug {
-		log.Printf("metering points: %#v", meteringPoints)
-	}
-
+	var deliverySites []DeliverySite = customerInfo.User.DeliverySites
 	if len(cli.Usage.MeteringPointId) > 0 {
-		filtered := []MeteringPoint{}
-		for _, item := range *meteringPoints {
-			if item.MeteringPointId == cli.Usage.MeteringPointId {
+		filtered := []DeliverySite{}
+		for _, item := range deliverySites {
+			if item.Consumption.MeteringPointId == cli.Usage.MeteringPointId {
 				filtered = append(filtered, item)
 			}
 		}
-		meteringPoints = &filtered
+		deliverySites = filtered
 	}
-	if len(*meteringPoints) == 0 {
+
+	if len(deliverySites) == 0 {
 		if cli.Debug {
 			log.Print("no metering points found")
 		}
 		return
 	}
 
-	consumptionData, err := getConsumptionData(client, cli.Url, cli.Usage.AccessToken, customerInfo.Owner.CustomerId, cli.Usage.From, cli.Usage.To, meteringPoints)
+	consumptionData, err := getConsumptionData(client, cli.Url, cli.Usage.Cookies, customerInfo.User.CustomerId, cli.Usage.From, cli.Usage.To, &deliverySites)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -143,9 +154,9 @@ func doUsage() {
 
 	type meteringRow struct {
 		Time                 string
-		CustomerId           uint64
+		CustomerId           string
 		MeteringPointId      string
-		MeteringPointNo      uint64
+		MeteringPointNo      string
 		MeteringPointAddress string
 		Energy               float64
 		Cost                 float64
@@ -161,22 +172,22 @@ func doUsage() {
 
 	for idx, item := range *consumptionData {
 		if cli.Debug {
-			log.Printf("processing %d metering rows for consumption item %d", len(item.Consumption), idx)
+			log.Printf("processing %d metering rows for consumption item %d", len(item.Result.Data.Json[0].Series), idx)
 		}
-		for _, ci := range item.Consumption {
-			time, err := ci.FromTime.atLocation(tz)
+		for _, ci := range item.Result.Data.Json[0].Series {
+			time, err := ci.AtUTC.atLocation(tz)
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			row := meteringRow{
 				*time,
-				customerInfo.Owner.CustomerId,
-				item.MeteringPoint.MeteringPointId,
-				item.MeteringPoint.MeteringPointNo,
-				item.MeteringPoint.Address.Format(),
-				ci.Energy,
-				ci.EnergyCost + ci.EnergyBaseCost,
+				customerInfo.User.CustomerId,
+				item.DeliverySite.Consumption.MeteringPointId,
+				item.DeliverySite.Consumption.MeteringPointNo,
+				item.DeliverySite.FormatAddress(),
+				ci.EnergyConsumptionValue(),
+				ci.TotalElectricityCost(),
 			}
 
 			err = meteringTemplate.Execute(os.Stdout, row)

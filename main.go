@@ -200,5 +200,5 @@ func doUsage() {
 }
 
 func httpClient() *http.Client {
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 60 * time.Second}
 }

@@ -67,7 +67,7 @@ func doAuthenticate() string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if cookies == nil || len(cookies) != 2 {
+	if len(cookies) == 0 {
 		log.Fatal("Could not resolve cookies token")
 	}
 	var result []string

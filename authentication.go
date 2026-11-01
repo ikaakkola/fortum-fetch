@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -15,17 +14,18 @@ import (
 // Login button in landing page
 const loginButton = `//button[@data-testid="loginButton"]`
 
-// Form elements in Login page
-const userNameInput = `//input[@name="callback_1"]`
-const passwordInput = `//input[@name="callback_2"]`
-const submitButton = `//button[text()="%v"]`
+// Form elements in Login page. The SSO flow asks for the user name and the
+// password on two separate pages, both fields are named callback_1. The form
+// is submitted by pressing enter in the field, the submit button texts differ
+// between pages and languages.
+const userNameInput = `//input[@name="callback_1"][@type="text"]`
+const passwordInput = `//input[@name="callback_1"][@type="password"]`
 
 type Auth struct {
-	User      string
-	Password  string
-	BaseUrl   string
-	Token     string
-	LoginText string
+	User     string
+	Password string
+	BaseUrl  string
+	Token    string
 }
 
 func NewAuth(user *string, password *string, baseUrl *string) (*Auth, error) {
@@ -42,15 +42,7 @@ func NewAuth(user *string, password *string, baseUrl *string) (*Auth, error) {
 	a.User = *user
 	a.Password = *password
 	a.BaseUrl = *baseUrl
-	if strings.Contains(a.BaseUrl, "/fi/sahkoa/sv") {
-		a.LoginText = "Logga in"
-	} else if strings.Contains(a.BaseUrl, "/fi/sahkoa/en") {
-		a.LoginText = "Log in"
-	} else if strings.Contains(a.BaseUrl, "/se/el") {
-		a.LoginText = "Logga in"
-	} else if strings.Contains(a.BaseUrl, "/fi/sahkoa") {
-		a.LoginText = "Kirjaudu"
-	} else {
+	if !strings.Contains(a.BaseUrl, "/fi/sahkoa") && !strings.Contains(a.BaseUrl, "/se/el") {
 		return nil, errors.New("Invalid base url")
 	}
 	return &a, nil
@@ -81,21 +73,14 @@ func getAccessCookies(auth *Auth) ([]*network.Cookie, error) {
 		log.Printf("navigate to %s", auth.BaseUrl)
 	}
 
-	var res []string
 	err := chromedp.Run(ctx,
 		runWithTimeOut(&ctx, 30, chromedp.Tasks{
 			chromedp.Navigate(auth.BaseUrl),
-			chromedp.WaitReady(`body`),
-			chromedp.Click(`//button[@id="onetrust-reject-all-handler"]`),
-			chromedp.Evaluate(`document.querySelector('button[data-testid="loginButton"]').click()`, &res),
+			chromedp.WaitReady(loginButton),
+			// a javascript click so that the cookie banner cannot cover the button
+			chromedp.Evaluate(`document.querySelector('button[data-testid="loginButton"]').click()`, nil),
 		}),
 	)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	err = chromedp.Run(ctx)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -108,22 +93,11 @@ func getAccessCookies(auth *Auth) ([]*network.Cookie, error) {
 		runWithTimeOut(&ctx, 30, chromedp.Tasks{
 			chromedp.Sleep(time.Second * 3), // the Wicket javascript seems to connect to elements slowly
 			chromedp.WaitReady(userNameInput),
-			chromedp.SendKeys(userNameInput, auth.User),
-			chromedp.SendKeys(passwordInput, auth.Password),
+			chromedp.SendKeys(userNameInput, auth.User+"\r"),
+			chromedp.WaitReady(passwordInput),
+			chromedp.SendKeys(passwordInput, auth.Password+"\r"),
 		}),
 	)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	// Submit login form
-	err = chromedp.Run(ctx, runWithTimeOut(&ctx, 10, chromedp.Tasks{
-		chromedp.WaitReady(fmt.Sprintf(submitButton, auth.LoginText)),
-		chromedp.Click(fmt.Sprintf(submitButton, auth.LoginText)),
-		chromedp.WaitNotPresent(passwordInput),
-	}))
-
 	if err != nil {
 		cancel()
 		return nil, errors.Join(errors.New("login failed"), err)
@@ -145,14 +119,9 @@ func getAccessCookies(auth *Auth) ([]*network.Cookie, error) {
 }
 
 func getCookies(ctx context.Context) ([]*network.Cookie, error) {
-	attempt := 1
-
-	var result []*network.Cookie
-
-	var err error = nil
-	for attempt < 100 {
-		err = chromedp.Run(ctx,
-			chromedp.WaitReady(`body`),
+	for attempt := 1; attempt < 100; attempt++ {
+		var result []*network.Cookie
+		err := chromedp.Run(ctx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				cookies, err := network.GetCookies().Do(ctx)
 				if err != nil {
@@ -175,17 +144,14 @@ func getCookies(ctx context.Context) ([]*network.Cookie, error) {
 			return nil, err
 		}
 
-		if len(result) == 2 {
+		// a large session cookie is split into multiple chunks
+		if len(result) > 0 {
 			return result, nil
 		}
 
-		attempt += 1
 		time.Sleep(time.Millisecond * 100)
 	}
 
-	if err != nil {
-		return nil, err
-	}
 	return nil, errors.New("Did not find authentication cookies")
 }
 
